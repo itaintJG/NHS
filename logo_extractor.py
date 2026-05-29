@@ -83,35 +83,56 @@ def _pick_url_column(headers: list[str]) -> str | None:
     return None
 
 
+def _looks_like_url(value: str) -> bool:
+    value = value.strip()
+    if not value:
+        return False
+    if value.startswith(("http://", "https://")):
+        return True
+    return "." in value and " " not in value
+
+
 def read_csv_urls(path: str, column: str | None) -> list[str]:
     """Read website URLs from a CSV file.
 
-    Auto-detects a header and a URL-like column (url, website, domain, ...). Falls
-    back to the first column. Use --csv-column to name the column explicitly.
+    Picks the URL column deterministically:
+      * if --csv-column is given, use it (error if absent);
+      * else use a header column named url/website/domain/... if present;
+      * else assume a single-column / first-column list, skipping a non-URL
+        looking first row (a header label) but keeping a URL-looking one.
+    Handles a BOM (utf-8-sig) that spreadsheets often add.
     """
     import csv
 
-    # utf-8-sig strips a BOM that spreadsheets often add.
     with open(path, newline="", encoding="utf-8-sig") as fh:
-        sample = fh.read(8192)
-        fh.seek(0)
-        try:
-            has_header = bool(sample.strip()) and csv.Sniffer().has_header(sample)
-        except csv.Error:
-            has_header = bool(column)  # if a column was named, assume a header exists
+        rows = [r for r in csv.reader(fh) if any(c.strip() for c in r)]
+    if not rows:
+        return []
 
-        if has_header:
-            reader = csv.DictReader(fh)
-            headers = reader.fieldnames or []
-            col = column or _pick_url_column(headers) or (headers[0] if headers else None)
-            if column and col not in headers:
-                raise SystemExit(
-                    f"Column '{column}' not found in {path}. Available: {', '.join(headers)}"
-                )
-            return [row[col] for row in reader if col and row.get(col)]
+    first = rows[0]
+    lowered = [c.lower().strip() for c in first]
 
-        plain = csv.reader(fh)
-        return [row[0] for row in plain if row and row[0].strip()]
+    if column:
+        want = column.lower().strip()
+        if column in first:
+            idx = first.index(column)
+        elif want in lowered:
+            idx = lowered.index(want)
+        else:
+            raise SystemExit(
+                f"Column '{column}' not found in {path}. Available: {', '.join(first)}"
+            )
+        data = rows[1:]
+    else:
+        idx = next((i for i, c in enumerate(lowered) if c in URL_COLUMN_CANDIDATES), None)
+        if idx is not None:
+            data = rows[1:]  # matched a known header name
+        else:
+            idx = 0
+            # No recognizable header: treat first row as data only if it looks like a URL.
+            data = rows if _looks_like_url(first[0]) else rows[1:]
+
+    return [row[idx] for row in data if len(row) > idx and row[idx].strip()]
 
 
 def collect_urls(args: argparse.Namespace) -> list[str]:
