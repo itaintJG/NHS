@@ -34,6 +34,11 @@ python3 logo_extractor.py https://example.com github.com
 # URLs from a file (one per line; blank lines and # comments ignored)
 python3 logo_extractor.py --urls-file sites.txt
 
+# URLs from an uploaded CSV (auto-detects the URL column)
+python3 logo_extractor.py --csv websites.csv
+# ...or name the column explicitly
+python3 logo_extractor.py --csv websites.csv --csv-column "Company Website"
+
 # Save results to a file
 python3 logo_extractor.py --urls-file sites.txt --output logos.json
 
@@ -43,22 +48,22 @@ python3 logo_extractor.py example.com --format csv --output logos.csv
 
 Results (the actor's dataset items) are printed to stdout as JSON by default.
 
-## Input schema caveat
+## Input schema
 
-Apify actors name their URL input field differently. This script defaults to the
-standard Apify `startUrls` format:
+This actor takes a flat list of URL strings under the `urls` field:
 
 ```json
-{ "startUrls": [{ "url": "https://example.com" }] }
+{ "urls": ["https://example.com", "https://github.com"], "maxConcurrency": 10 }
 ```
 
-If a run errors (e.g. *"Field input.startUrls is required"*) or returns nothing,
-check the actor's **Input** tab on apify.com for the real field name, then either:
+The script builds that for you. If a run errors (e.g. *"Field input.urls is
+required"*) or returns nothing, confirm the field name on the actor's **Input**
+tab on apify.com, then either:
 
-- send a flat list under a different field name:
+- send the list under a different field name:
 
   ```bash
-  python3 logo_extractor.py example.com --plain-field websites
+  python3 logo_extractor.py example.com --field websites
   # -> {"websites": ["https://example.com"]}
   ```
 
@@ -74,8 +79,11 @@ check the actor's **Input** tab on apify.com for the real field name, then eithe
 | --- | --- |
 | `urls...` | One or more website URLs (positional). |
 | `--urls-file PATH` | Read URLs from a file, one per line. |
+| `--csv PATH` | Read URLs from a CSV file. |
+| `--csv-column NAME` | Column in `--csv` holding URLs (default: auto-detect). |
 | `--input-file PATH` | Use this JSON file as the actor input verbatim. |
-| `--plain-field NAME` | Send URLs as `{"NAME": [...]}` instead of `startUrls`. |
+| `--field NAME` | Name of the input field holding the URL list (default `urls`). |
+| `--max-concurrency N` | Set the actor's `maxConcurrency`. |
 | `--actor-id ID` | Override the actor ID (default `botflowtech~website-logo-extractor`). |
 | `--token TOKEN` | Apify token (default: `APIFY_TOKEN` env var). |
 | `--timeout SECS` | Actor run timeout in seconds (default `300`). |

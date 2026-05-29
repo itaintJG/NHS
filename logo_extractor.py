@@ -15,19 +15,21 @@ Quick start:
 Read URLs from a file (one per line):
     python3 logo_extractor.py --urls-file sites.txt --output logos.json
 
+Read URLs from an uploaded CSV (auto-detects the URL column):
+    python3 logo_extractor.py --csv websites.csv --output logos.json
+    python3 logo_extractor.py --csv websites.csv --csv-column "Company Website"
+
 Full control over the actor input (bypasses URL auto-building):
     python3 logo_extractor.py --input-file input.json
 
 NOTE ON THE INPUT SCHEMA
 ------------------------
-Different Apify actors name their URL input field differently (e.g. "startUrls",
-"websites", "domains"). This script defaults to the standard Apify "startUrls"
-format: {"startUrls": [{"url": "https://example.com"}, ...]}.
+This actor takes a flat list of URL strings under the "urls" field:
+{"urls": ["https://example.com", ...]}.
 
-If the run errors with something like "Field input.startUrls is required" or your
-results come back empty, open the actor's *Input* tab on apify.com to see the real
-field name, then either:
-  * pass --plain-field NAME to send {"NAME": ["https://example.com", ...]}, or
+If a run errors (e.g. "Field input.urls is required") or results come back empty,
+open the actor's *Input* tab on apify.com to confirm the field name, then either:
+  * pass --field NAME to send {"NAME": ["https://example.com", ...]}, or
   * use --input-file to send a hand-written input JSON exactly as the actor expects.
 """
 
@@ -49,15 +51,16 @@ def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
 
 
-def build_input(urls: list[str], plain_field: str | None) -> dict:
+def build_input(urls: list[str], field: str, max_concurrency: int | None) -> dict:
     """Construct the actor input from a list of URLs.
 
-    By default uses Apify's standard startUrls format. If --plain-field is given,
-    sends a flat list under that field name instead.
+    The botflowtech logo-extractor family takes a flat list of URL strings under
+    the "urls" field. Use --field to change the field name if needed.
     """
-    if plain_field:
-        return {plain_field: urls}
-    return {"startUrls": [{"url": u} for u in urls]}
+    payload: dict = {field: urls}
+    if max_concurrency is not None:
+        payload["maxConcurrency"] = max_concurrency
+    return payload
 
 
 def normalize_url(raw: str) -> str:
@@ -69,12 +72,56 @@ def normalize_url(raw: str) -> str:
     return raw
 
 
+URL_COLUMN_CANDIDATES = ("url", "urls", "website", "websites", "site", "domain", "link", "homepage")
+
+
+def _pick_url_column(headers: list[str]) -> str | None:
+    lowered = {h.lower().strip(): h for h in headers}
+    for cand in URL_COLUMN_CANDIDATES:
+        if cand in lowered:
+            return lowered[cand]
+    return None
+
+
+def read_csv_urls(path: str, column: str | None) -> list[str]:
+    """Read website URLs from a CSV file.
+
+    Auto-detects a header and a URL-like column (url, website, domain, ...). Falls
+    back to the first column. Use --csv-column to name the column explicitly.
+    """
+    import csv
+
+    # utf-8-sig strips a BOM that spreadsheets often add.
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        sample = fh.read(8192)
+        fh.seek(0)
+        try:
+            has_header = bool(sample.strip()) and csv.Sniffer().has_header(sample)
+        except csv.Error:
+            has_header = bool(column)  # if a column was named, assume a header exists
+
+        if has_header:
+            reader = csv.DictReader(fh)
+            headers = reader.fieldnames or []
+            col = column or _pick_url_column(headers) or (headers[0] if headers else None)
+            if column and col not in headers:
+                raise SystemExit(
+                    f"Column '{column}' not found in {path}. Available: {', '.join(headers)}"
+                )
+            return [row[col] for row in reader if col and row.get(col)]
+
+        plain = csv.reader(fh)
+        return [row[0] for row in plain if row and row[0].strip()]
+
+
 def collect_urls(args: argparse.Namespace) -> list[str]:
     urls: list[str] = []
     urls.extend(args.urls)
     if args.urls_file:
         with open(args.urls_file, "r", encoding="utf-8") as fh:
             urls.extend(line for line in fh.read().splitlines())
+    if args.csv:
+        urls.extend(read_csv_urls(args.csv, args.csv_column))
     # Filter blanks/comments and normalize, preserving order, de-duplicating.
     seen: set[str] = set()
     out: list[str] = []
@@ -165,17 +212,29 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("urls", nargs="*", help="Website URLs to extract logos from.")
     p.add_argument("--urls-file", help="Path to a file with one URL per line (# for comments).")
+    p.add_argument("--csv", help="Path to a CSV file of websites to read URLs from.")
+    p.add_argument(
+        "--csv-column",
+        help="Column name in --csv holding the URLs "
+        "(default: auto-detect url/website/domain/..., else first column).",
+    )
     p.add_argument(
         "--input-file",
         help="Path to a JSON file used as the actor input verbatim "
         "(overrides URL auto-building).",
     )
     p.add_argument(
-        "--plain-field",
+        "--field",
         metavar="NAME",
-        help="Send URLs as a flat list under this field name "
-        '(e.g. --plain-field websites -> {"websites": [...]}) '
-        "instead of the default startUrls format.",
+        default="urls",
+        help='Name of the actor input field that holds the list of URLs '
+        '(default: "urls" -> {"urls": [...]}).',
+    )
+    p.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Set the actor's maxConcurrency (parallel URL processing).",
     )
     p.add_argument(
         "--actor-id",
@@ -219,9 +278,9 @@ def main(argv: list[str]) -> int:
         urls = collect_urls(args)
         if not urls:
             eprint("Error: no URLs provided. Pass URLs as arguments, use --urls-file,")
-            eprint("or supply a full input with --input-file.")
+            eprint("--csv, or supply a full input with --input-file.")
             return 2
-        payload = build_input(urls, args.plain_field)
+        payload = build_input(urls, args.field, args.max_concurrency)
         eprint(f"Extracting logos for {len(urls)} site(s) via actor '{args.actor_id}'...")
 
     items = run_actor_sync(args.actor_id, args.token, payload, args.timeout)

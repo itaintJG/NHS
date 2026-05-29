@@ -1,6 +1,7 @@
 {
-  "startUrls": [
-    { "url": "https://example.com" },
-    { "url": "https://github.com" }
-  ]
+  "urls": [
+    "https://example.com",
+    "https://github.com"
+  ],
+  "maxConcurrency": 10
 }
