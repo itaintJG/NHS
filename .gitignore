@@ -1,0 +1,13 @@
+# Secrets / local env
+.env
+
+# Output artifacts
+*.json
+!input.example.json
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
