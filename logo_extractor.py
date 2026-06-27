@@ -69,13 +69,29 @@ def normalize_url(value):
     return value
 
 
+def read_text(path):
+    """Read a text file, tolerating non-UTF-8 files saved from Excel/Windows.
+
+    Tries UTF-8 (with BOM) first, then falls back to cp1252 (Windows) and
+    latin-1 so curly quotes/apostrophes (byte 0x92 etc.) don't crash us.
+    """
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            with open(path, "r", encoding=encoding, newline="") as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    # Last resort: never fail on a stray byte.
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
 def read_urls_file(path):
     urls = []
-    with open(path, "r", encoding="utf-8-sig") as f:
-        for line in f:
-            u = normalize_url(line)
-            if u:
-                urls.append(u)
+    for line in read_text(path).splitlines():
+        u = normalize_url(line)
+        if u:
+            urls.append(u)
     return urls
 
 
@@ -113,8 +129,8 @@ def read_csv_records(path, requested_column):
     """
     if not os.path.isfile(path):
         sys.exit(f"Error: CSV file not found: {path}")
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        rows = [row for row in csv.reader(f) if row and any(c.strip() for c in row)]
+    text = read_text(path)
+    rows = [row for row in csv.reader(io.StringIO(text)) if row and any(c.strip() for c in row)]
 
     if not rows:
         sys.exit(f"Error: CSV '{path}' is empty.")
