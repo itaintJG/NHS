@@ -15,12 +15,15 @@ Examples:
     python logo_extractor.py --urls-file sites.txt --format csv --output logos.csv
 """
 import argparse
+import base64
 import csv
 import io
 import json
 import os
+import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DEFAULT_ACTOR = "botflowtech~website-logo-extractor"
@@ -295,6 +298,131 @@ def _flatten(value):
     return value
 
 
+# --- Downloading the actual logo image files -------------------------------
+
+# Map common image content-types to file extensions, for when the URL has none.
+_CONTENT_TYPE_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/svg+xml": ".svg",
+    "image/webp": ".webp",
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+    "image/bmp": ".bmp",
+    "image/avif": ".avif",
+}
+
+_VALID_IMAGE_EXTS = set(_CONTENT_TYPE_EXT.values()) | {".jpeg", ".ico"}
+
+
+def safe_filename(name):
+    """Turn a company name / URL into a safe base filename (no extension)."""
+    name = (name or "").strip()
+    if not name:
+        name = "logo"
+    # Drop scheme and www. if a URL slipped in.
+    name = re.sub(r"^https?://", "", name)
+    name = re.sub(r"^www\.", "", name)
+    name = name.strip("/")
+    # Replace anything not alphanumeric / dash / underscore with a dash.
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name)
+    name = re.sub(r"-{2,}", "-", name).strip("-_.")
+    return name or "logo"
+
+
+def _ext_from_url(logo_url):
+    path = urllib.parse.urlparse(logo_url).path
+    ext = os.path.splitext(path)[1].lower()
+    return ext if ext in _VALID_IMAGE_EXTS else ""
+
+
+def _decode_data_uri(logo_url):
+    """Return (bytes, ext) for a data: URI, or (None, None) if not decodable."""
+    match = re.match(r"data:([^;,]*)(;base64)?,(.*)$", logo_url, re.DOTALL)
+    if not match:
+        return None, None
+    mime, is_b64, payload = match.group(1), match.group(2), match.group(3)
+    try:
+        if is_b64:
+            raw = base64.b64decode(payload)
+        else:
+            raw = urllib.parse.unquote_to_bytes(payload)
+    except Exception:
+        return None, None
+    ext = _CONTENT_TYPE_EXT.get(mime.lower().strip(), ".img")
+    return raw, ext
+
+
+def download_logo(logo_url, dest_dir, base_name, token=None):
+    """Download one logo to dest_dir/base_name.<ext>.
+
+    Returns the saved file path, or None if nothing could be downloaded.
+    """
+    if not logo_url:
+        return None
+
+    # Inline data: URI — decode directly, no network call.
+    if logo_url.startswith("data:"):
+        raw, ext = _decode_data_uri(logo_url)
+        if not raw:
+            return None
+        path = os.path.join(dest_dir, base_name + ext)
+        with open(path, "wb") as f:
+            f.write(raw)
+        return path
+
+    req = urllib.request.Request(
+        logo_url,
+        headers={"User-Agent": "Mozilla/5.0 (logo-extractor)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"    ! could not download {logo_url}: {e}", file=sys.stderr)
+        return None
+
+    if not raw:
+        return None
+    ext = _ext_from_url(logo_url) or _CONTENT_TYPE_EXT.get(content_type, ".img")
+    path = os.path.join(dest_dir, base_name + ext)
+    with open(path, "wb") as f:
+        f.write(raw)
+    return path
+
+
+def download_logos(rows, dest_dir, name_field, url_field="logo_url", token=None):
+    """Download every row's logo into dest_dir, named after name_field.
+
+    Mutates each row, adding a 'logo_file' column with the saved path (or "").
+    Returns the number of files successfully downloaded.
+    """
+    os.makedirs(dest_dir, exist_ok=True)
+    used = {}
+    saved = 0
+    for row in rows:
+        logo_url = row.get(url_field)
+        if not logo_url:
+            row["logo_file"] = ""
+            continue
+        base = safe_filename(row.get(name_field) or row.get("url"))
+        # Avoid collisions when two companies share a name.
+        used[base] = used.get(base, 0) + 1
+        if used[base] > 1:
+            base = f"{base}-{used[base]}"
+        path = download_logo(logo_url, dest_dir, base, token=token)
+        if path:
+            row["logo_file"] = os.path.basename(path)
+            saved += 1
+            print(f"    saved {os.path.basename(path)}", file=sys.stderr)
+        else:
+            row["logo_file"] = ""
+    return saved
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Apify Website Logo Extractor runner.")
     p.add_argument("urls", nargs="*", help="Website URLs to extract logos from.")
@@ -318,12 +446,32 @@ def parse_args(argv):
     p.add_argument("--raw", action="store_true",
                    help="Return the actor's full output (all logo candidates) "
                         "instead of one best-logo row per site.")
+    p.add_argument("--download", action="store_true",
+                   help="Download the actual logo image files (not just URLs).")
+    p.add_argument("--logo-dir", default="logos",
+                   help="Folder to save downloaded logos into (default: logos).")
+    p.add_argument("--name-column",
+                   help="CSV column to name downloaded files after "
+                        "(default: NAME if present, else the website URL).")
     return p.parse_args(argv)
 
 
 def _default_output(csv_path):
     base, _ = os.path.splitext(csv_path)
     return base + "-with-logos.csv"
+
+
+def _pick_name_field(requested, columns):
+    """Choose which column to name downloaded logo files after."""
+    if requested:
+        # match case-insensitively against the real column names
+        lowered = {c.lower(): c for c in columns}
+        return lowered.get(requested.lower(), requested)
+    for cand in ("name", "company", "company name", "builder", "business"):
+        for c in columns:
+            if c.lower() == cand:
+                return c
+    return "url"
 
 
 def main(argv=None):
@@ -374,14 +522,29 @@ def main(argv=None):
 
     if args.raw:
         write_output(items, fmt, args.output)
+        if args.download:
+            print("Note: --download is ignored with --raw (no single best logo per site).",
+                  file=sys.stderr)
     elif merging:
         out_columns, rows = merge_records(csv_columns, csv_records, items)
+        if args.download:
+            name_field = _pick_name_field(args.name_column, out_columns)
+            print(f"Downloading logos into {args.logo_dir}/ ...", file=sys.stderr)
+            saved = download_logos(rows, args.logo_dir, name_field)
+            if "logo_file" not in out_columns:
+                out_columns = list(out_columns) + ["logo_file"]
+            print(f"  downloaded {saved} of {len(rows)} logo(s)", file=sys.stderr)
         output = args.output or _default_output(args.csv)
         write_output(rows, fmt, output, columns=out_columns)
         ready = sum(1 for r in rows if r["logo_status"] == "ready")
         print(f"  {ready} ready, {len(rows) - ready} need review", file=sys.stderr)
     else:
-        write_output(flatten_best(items), fmt, args.output)
+        rows = flatten_best(items)
+        if args.download:
+            print(f"Downloading logos into {args.logo_dir}/ ...", file=sys.stderr)
+            saved = download_logos(rows, args.logo_dir, "url")
+            print(f"  downloaded {saved} of {len(rows)} logo(s)", file=sys.stderr)
+        write_output(rows, fmt, args.output)
 
 
 if __name__ == "__main__":

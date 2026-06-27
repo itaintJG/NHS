@@ -42,7 +42,29 @@ python logo_extractor.py https://www.apple.com https://www.google.com
 
 # URLs from a text file, one per line
 python logo_extractor.py --urls-file sites.txt --output logos.json
+
+# Also DOWNLOAD the actual logo image files (not just the URLs)
+python logo_extractor.py --csv websites.csv --download
 ```
+
+### Downloading the logo images
+
+By default you get logo *URLs* (links). Add `--download` to also save the actual
+image files to your computer:
+
+```bash
+python logo_extractor.py --csv utah-websites.csv --download
+```
+
+This saves each logo into a `logos/` folder, named after the company (e.g.
+`Visionary-Homes.png`, `Adair-Homes.svg`), and adds a `logo_file` column to the
+output CSV so you can see which file belongs to which row. Options:
+
+- `--logo-dir FOLDER` — save into a different folder (default `logos`).
+- `--name-column NAME` — name files after a specific CSV column (default: the
+  `NAME` column if present, else the website URL).
+
+Sites with no logo found are simply skipped (blank `logo_file`).
 
 ### Windows note
 
@@ -83,6 +105,9 @@ list for every site instead of the one-row-per-site summary.
 | `--output PATH` | Write output here (default: `<csv>-with-logos.csv` or stdout). |
 | `--format {json,csv}` | Output format (default: csv when merging a CSV, else json). |
 | `--raw` | Return all logo candidates per site, not just the best one. |
+| `--download` | Download the actual logo image files, not just URLs. |
+| `--logo-dir FOLDER` | Folder to save downloaded logos into (default `logos`). |
+| `--name-column NAME` | CSV column to name downloaded files after. |
 | `--batch-size N` | Sites per actor run (default 10; `0` = no batching). |
 | `--memory N` | Actor run memory in MB (default 4096). |
 | `--max-concurrency N` | Actor `maxConcurrency` setting. |
