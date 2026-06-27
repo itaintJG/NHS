@@ -115,6 +115,37 @@ list for every site instead of the one-row-per-site summary.
 | `--actor ID` | Override the actor ID. |
 | `--token TOKEN` | Apify token (default: `.env` / `APIFY_TOKEN` env). |
 
+## Putting logos on a uniform square canvas (`logo_box.py`)
+
+After downloading logos, `logo_box.py` centers each one on a fixed-size square
+(default **350×350**) so they're all uniform. The background is chosen per logo:
+
+- **white** normally;
+- **black** when the logo artwork is light/white (so it doesn't disappear).
+
+Force one with `--background white|black` if you ever want to override.
+
+```bash
+# Needs Pillow once:
+pip install Pillow
+# (optional, only if you have .svg logos)
+pip install cairosvg
+
+# Process every image in ./logos -> ./logos-boxed
+python logo_box.py
+
+# Custom folders / size
+python logo_box.py --in logos --out boxed --size 350
+
+# One file, forced white background
+python logo_box.py mylogo.png --background white
+```
+
+Each output is a 350×350 PNG named the same as the input logo. It auto-detects
+whether a logo is light or dark and prints which background it used for each, so
+you can spot-check. `--margin` controls the breathing room around the logo
+(default 12%).
+
 ## How it works
 
 The script calls Apify's
