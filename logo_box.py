@@ -8,7 +8,7 @@ Background is chosen automatically per logo:
 You can force one with --background white|black.
 
 Needs Pillow:  pip install Pillow
-(Optional) SVG support:  pip install cairosvg
+(Optional) SVG support:  pip install resvg-py
 
 Examples:
     python logo_box.py                         # process ./logos -> ./logos-boxed
@@ -47,19 +47,42 @@ def _mean_rgb(pixels):
     return (r, g, b)
 
 
+def _rasterize_svg(path, size=1024):
+    """Render an SVG to an RGBA PIL image, trying whichever backend is installed.
+
+    Prefers resvg-py (self-contained, prebuilt wheels, easy on Windows); falls
+    back to cairosvg if that's what the user already has. Raises RuntimeError
+    if neither is available.
+    """
+    import io
+
+    # Backend 1: resvg-py  (pip install resvg-py) — no native deps to install.
+    try:
+        import resvg_py
+        png_bytes = resvg_py.svg_to_bytes(svg_path=path, width=size)
+        return Image.open(io.BytesIO(bytes(png_bytes))).convert("RGBA")
+    except ImportError:
+        pass
+
+    # Backend 2: cairosvg  (pip install cairosvg)
+    try:
+        import cairosvg
+        png_bytes = cairosvg.svg2png(url=path, output_width=size, output_height=size)
+        return Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    except ImportError:
+        pass
+
+    raise RuntimeError(
+        "SVG support needs one extra library. Install it with:  "
+        "pip install resvg-py"
+    )
+
+
 def load_image(path):
-    """Open an image as RGBA. Rasterize SVG via cairosvg if available."""
+    """Open an image as RGBA. Rasterize SVG via an available backend."""
     ext = os.path.splitext(path)[1].lower()
     if ext in SVG_EXTS:
-        try:
-            import cairosvg
-        except ImportError:
-            raise RuntimeError(
-                "SVG file needs cairosvg (pip install cairosvg) — skipped"
-            )
-        import io
-        png_bytes = cairosvg.svg2png(url=path, output_width=1024, output_height=1024)
-        return Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+        return _rasterize_svg(path)
     return Image.open(path).convert("RGBA")
 
 
